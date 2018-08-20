@@ -1,2 +1,2 @@
 # test_repo
-Reapo for class
+Repo for class
