@@ -1,0 +1,55 @@
+
+---
+output: 
+  pdf_document:
+    fig_caption: false
+header-includes:
+- \usepackage[utf8]{inputenc}
+- \usepackage[T1]{fontenc}
+- \usepackage{textcomp}
+- \usepackage[english]{babel}
+- \usepackage{dcolumn}
+- \usepackage{enumitem}
+- \usepackage{xcolor}
+# geometry: top=0.5cm,left=2cm, right = 2cm
+fontsize: 11pt
+params:
+    name: Migla Miskinyte #Change your name!!
+    date: 2021-03-15 #Change date!!
+    description: Survival analysis #Change to description of analysis!!
+    data: folders/HMI/Migla/data/2021/March #change it 
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = T,background = '#ff9900',highlight = TRUE,comment = NA,warning = F)
+```
+
+<!-- DO NOT CHANGE: JUST CHANGE graphics path -->
+\begin{minipage}[t]{0.2\textwidth}
+\graphicspath{{C:/Migla/}}    
+\centering\includegraphics[width=10in]{Wolbachia.png}
+\end{minipage}
+\begin{minipage}[t]{0.7\textwidth}
+\vspace{-2.7cm}
+\centering \Large \textbf{Host-microbe interactions 2020/21}\\Date: `r params$date`\\Data in: `r params$data`\\`r params$name`\\
+\end{minipage}
+<!-- END -->
+
+<!-- DO NOT CHANGE -->
+\textbf{DCV pricking test - `r params$description`} 
+<!-- END OF DO NOT CHANGE -->
+
+This is my first trial for DCV pricking using two different genotypes of Wolbachia (Iso and wMel) and different concentrations of virus.
+
+\ First, all necessary packages are uploaded. Remove hashtag before running. 
+
+```{r}
+#library(tidyverse)
+#library(coxme)
+#library(car)
+#library(emmeans)
+#library(here)
+#library(ggplot2)
+
+```
