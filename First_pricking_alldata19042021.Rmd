@@ -1,0 +1,863 @@
+
+---
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_caption: no
+header-includes:
+- \usepackage[utf8]{inputenc}
+- \usepackage[T1]{fontenc}
+- \usepackage{textcomp}
+- \usepackage[english]{babel}
+- \usepackage{dcolumn}
+- \usepackage{enumitem}
+- \usepackage{xcolor}
+fontsize: 11pt
+params:
+  name: Migla Miskinyte
+  date: '2021-03-15'
+  description: Survival analysis
+  data: folders/HMI/Migla/data/2021/March
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = T,background = '#ff9900',highlight = TRUE,comment = NA,warning = F)
+```
+
+<!-- DO NOT CHANGE: JUST CHANGE graphics path -->
+\begin{minipage}[t]{0.2\textwidth}
+\graphicspath{{C:/Migla/}}    
+\centering\includegraphics[width=10in]{Wolbachia.png}
+\end{minipage}
+\begin{minipage}[t]{0.7\textwidth}
+\vspace{-2.7cm}
+\centering \Large \textbf{Host-microbe interactions 2020/21}\\Date: `r params$date`\\Data in: `r params$data`\\`r params$name`\\
+\end{minipage}
+<!-- END -->
+
+<!-- DO NOT CHANGE -->
+\textbf{DCV pricking test - `r params$description`} 
+<!-- END OF DO NOT CHANGE -->
+
+This is my first trial for DCV pricking using two different genotypes of Wolbachia (Iso and wMel) and different concentrations of virus.
+
+\ First, all necessary packages are uploaded. Remove hashtag before running. 
+
+```{r}
+library(tidyverse)
+library(coxme)
+library(car)
+library(emmeans)
+library(here)
+library(ggplot2)
+library(tidyr)
+library(scales)
+library(hrbrthemes)
+library(extrafont)
+#library(ggforestplot)
+#library(survivalAnalysis)
+
+
+
+```
+
+
+HMI theme:
+```{r}
+theme_HMI <- function(base_size = 10, base_family = "Arial")
+{
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(
+      plot.title = element_text(size = 10, hjust=0),
+      plot.title.position="plot",
+      legend.key = element_rect(colour = "white"),
+      legend.text = element_text(size = 8),
+      panel.spacing = unit(0.75, "lines"),
+      panel.border = element_rect(fill = NA, colour = NA),
+      panel.grid.major.y = element_line(colour = "grey80", size = 0.25),
+      panel.grid.minor.y = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.line = element_line(colour = "black", size = 0.25),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.text = element_text(colour = "black", size =8),
+      axis.title.y = element_text(angle = 0, vjust = 1, size = 10),
+      axis.title.x = element_text(size = 10),
+      strip.placement = "outside",
+      strip.background = element_blank(),
+      strip.text = element_text(size = 10),
+      strip.text.y = element_text(angle = 0)
+    )
+}
+```
+
+
+
+
+Now run converter function. 
+
+```{r}
+## script of surv_converter() function
+## Converts HMI survival data to long format. Output file has information on flies alive per day
+# and number of flies with different status for survival analysis.
+
+## Author: Luis Teixeira, Host-Microorganism Interactions lab
+##version 1.0
+
+# requires tidyverse library
+
+surv_converter <- function(filename, save_table = TRUE) {
+  
+  #load file
+  surv <- read.csv(filename, stringsAsFactors = FALSE, header = FALSE)
+  
+  
+  # change entries using higher case in old format to lower case. These lines are only required to make this script compatible with older data files.
+  #It can be eliminated in a new script and an error will be shown if old format is being used. Directly editing data file will also solve the problem.
+  surv[surv == "Factors"] <- c("factors")
+  surv[surv == "Days"] <- c("day")
+  surv[surv == "Info"] <- c("info")
+  surv[surv == "Date"] <- c("date")
+  
+  #find rows which separate info, factors, and survival data blocks.
+  factors_row <- match("factors",surv[,1])
+  day_row <- match("day",surv[,1])
+  
+  # Get date, last day of survival, total number of flies, names of factors
+  date <- surv[match("date",surv[,1]), 2]
+  lastday <- as.numeric(surv[nrow(surv), 1])
+  sum_control <- sum(as.numeric(surv[day_row+1, 2:ncol(surv)]))
+  factors_names <- surv[(factors_row+1):(day_row-1), 1]
+  
+  #print total number of flies
+  print(paste(("total number of flies is "),sum_control,sep=""))
+  
+  # quality check #####
+  
+  #check some file formatting
+  if (surv[1,1] != "info") {stop("There is an error in  file format")}
+  if (is.na(factors_row)) {stop("There is an error in  file format, no cell with *factors*")}
+  if (is.na(day_row)) {stop("There is an error in  file format, no cell with *days*")}
+  
+  if (day_row < factors_row) {stop("There is an error in  file format")}
+  if (day_row == (factors_row+1)) {stop("There is an error in  file format - factors are not defined")}
+  
+  
+  #print row and column number to check in case of troubleshooting
+  print(paste("input file has ", nrow(surv), " rows and ", ncol(surv), " columns", sep=""))
+  
+  #check if number of flies increases from one day to the other
+  for (j in 2:ncol(surv)) {
+    for (i in (day_row+1):(nrow(surv)-1)) {
+      if (as.numeric(surv[i,j]) < as.numeric(surv[i+1,j])) {
+        stop(paste("Spontaneous generation of flies at day ", surv[i+1,1],", column ", j, sep=""))
+      }
+    }
+  }
+  
+  #check if days start at 0 and are consecutive numbers till last day
+  if (surv[day_row+1, 1] != 0) {stop("There is an error in  file format - day 0 data is not shown")}
+  
+  for (i in (day_row+1):(nrow(surv)-1)) {
+    if ((as.numeric(surv[i+1,1]) - as.numeric(surv[i,1])) != 1 ) {
+      stop(paste("There is an error in days of survival, they should be consecutive days. Check rows ", i," and ", i+1, sep=""))
+    }
+  }
+  
+  
+  # transform data #####
+  
+  #transpose table, get column names from first row, delete first row, delete columns of "info" block and column "day"
+  trans_surv <- as.data.frame(t(surv))
+  colnames(trans_surv)=trans_surv[1,]
+  trans_surv <- trans_surv[-1, ]
+  trans_surv <- trans_surv[, -c(1:factors_row,day_row)]
+  
+  #convert survival data to numeric
+  data_col <- ((day_row - factors_row):ncol(trans_surv))
+  trans_surv[, data_col] <- sapply(trans_surv[, data_col], as.numeric)
+  
+  #check that each row is a unique combination of factors
+  if (nrow(trans_surv) != nrow(unique(trans_surv[, factors_names]))) {
+    stop("There is an error in factors specification - at least two column have the same combination of factors")
+  }
+  
+  #transform wide to long
+  trans_surv <- trans_surv %>% 
+    pivot_longer(
+      cols = all_of(data_col),
+      names_to = "day_alive",
+      values_to = "number_alive",
+      values_drop_na = FALSE
+    )
+  
+  #add date if exists
+  if (!is.na(date)) {trans_surv <- add_column(trans_surv, date = date, .before = 1)}
+  
+  
+  #make "day" and "survival" numeric
+  trans_surv$day_alive <- as.numeric(trans_surv$day_alive)
+  trans_surv$number_alive <- as.numeric(trans_surv$number_alive)
+  
+  
+  #make day_status, number_status and status columns
+  trans_surv <- trans_surv %>% add_column(day_status = NA, number_status = NA, status = NA)
+  
+  
+  #get dead per day, add 1 to day with dead flies, set status for statistical analysis (1  = dead, 0 = alive (truncated at the last day))
+  for (i in 1:(nrow(trans_surv))){
+    if (trans_surv$day_alive[i] != lastday) {
+      trans_surv$number_status[i] = trans_surv$number_alive[i] - trans_surv$number_alive[i+1]
+      trans_surv$day_status[i] <- trans_surv$day_alive[i] + 1
+      if (trans_surv$number_status[i] != 0) {
+        trans_surv$status[i] <- 1
+      }
+    } else {
+      trans_surv$number_status[i] = trans_surv$number_alive[i]
+      trans_surv$day_status[i] = trans_surv$day_alive[i]
+      if (trans_surv$number_status[i] != 0) {
+        trans_surv$status[i] <- 0
+      }
+    }
+  }
+  
+  
+  # check if final number of flies is equal to inicial number of flies 
+  if (sum(trans_surv$number_status) != sum_control) {  stop("There is an error number of flies in final table") }
+  
+  
+  #write file
+  if(save_table) {
+    filename <- str_remove(filename, ".csv")
+    write.table(trans_surv, file = paste(filename, "_converted.csv", sep=""), sep = ",", row.names = FALSE, col.names = TRUE)
+  }
+  
+  #end
+  return(trans_surv)
+  
+}
+
+```
+
+Check where I am?
+```{r}
+here::i_am("Scripts/surv_converter.R")
+
+```
+Run converter function  using the dataset. 
+```{r}
+converted_data <- surv_converter(here("Scripts","first_pricking.csv"))
+
+```
+
+
+Check data format.
+```{r}
+head(converted_data)
+
+```
+Load converted data.
+
+```{r}
+surv_1_plot <- read.csv(here("Scripts","first_pricking_converted.csv"), stringsAsFactors = FALSE, header = TRUE)
+
+head(surv_1_plot)
+```
+Need to separate data into 10e6 and no virus, 10e7 and no virus, 10e8, 10e9..
+
+```{r}
+data_10e6=subset(surv_1_plot, dilution %in% c("0","10^6"))
+data_10e7=subset(surv_1_plot, dilution %in% c("0","10^7"))
+data_10e8=subset(surv_1_plot, dilution %in% c("0","10^8"))
+data_10e9=subset(surv_1_plot, dilution %in% c("0","10^9"))
+head(data_10e6)
+
+```
+
+Save data:
+
+
+```{r}
+write.table(data_10e6,here("data_10e6.csv"), sep = ",", row.names = FALSE, col.names = TRUE)
+write.table(data_10e7,here("data_10e7.csv"), sep = ",", row.names = FALSE, col.names = TRUE)
+write.table(data_10e8,here("data_10e8.csv"), sep = ",", row.names = FALSE, col.names = TRUE)
+write.table(data_10e9,here("data_10e9.csv"), sep = ",", row.names = FALSE, col.names = TRUE)
+```
+
+PLOTS
+
+
+
+Plotting using Luis code.
+
+Sum survival values per condition, per day, and make new column expressing this as percentage.
+This gives average across vials in one condition per day, in one experiment.
+The data are first grouped by all factors except "vial".
+Number of flies alive in that day in all vials of those conditions are summed.
+The sum of flies alive in all vials in that day in that condition is then divided by the initial total of flies (the maximum of these sums per condition).
+Note - in the script below the table is first grouped by "virus", "wolbachia", and "day_alive". After the "summarise" function the last level of grouping is lost and becomes only "virus" and "wolbachia". This is useful since allows the "max" function afterwards. But be careful with order of factors in "group_by"
+
+
+```{r}
+surv_curves_summary_10e6 <- data_10e6 %>%
+    group_by(virus, wolbachia,dilution, day_alive) %>%
+    summarise(number_alive = sum(number_alive)) %>%
+    mutate(surv_percentage = number_alive / max(number_alive) * 100) %>%
+    ungroup()
+
+head(surv_curves_summary_10e6)
+```
+
+```{r}
+surv_curves_summary_10e7 <- data_10e7 %>%
+    group_by(virus, wolbachia,dilution, day_alive) %>%
+    summarise(number_alive = sum(number_alive)) %>%
+    mutate(surv_percentage = number_alive / max(number_alive) * 100) %>%
+    ungroup()
+
+head(surv_curves_summary_10e7)
+```
+
+
+```{r}
+surv_curves_summary_10e8 <- data_10e8 %>%
+    group_by(virus, wolbachia,dilution, day_alive) %>%
+    summarise(number_alive = sum(number_alive)) %>%
+    mutate(surv_percentage = number_alive / max(number_alive) * 100) %>%
+    ungroup()
+
+head(surv_curves_summary_10e8)
+```
+
+```{r}
+surv_curves_summary_10e9 <- data_10e9 %>%
+    group_by(virus, wolbachia,dilution, day_alive) %>%
+    summarise(number_alive = sum(number_alive)) %>%
+    mutate(surv_percentage = number_alive / max(number_alive) * 100) %>%
+    ungroup()
+
+head(surv_curves_summary_10e9)
+```
+
+Plot data.
+```{r}
+plot <- ggplot(data = surv_curves_summary_10e6, aes(x = day_alive, y = surv_percentage, color = wolbachia, shape = virus)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 1.5, stroke = 0.5, fill = "white") +
+    scale_color_manual(values=c("grey50", "black")) +
+    scale_shape_manual(values=c(21, 19))+
+    theme_HMI()+
+    labs(x = "Days post infection", y = NULL, title = "Survival (%) after 10^6 DCV") 
+
+
+
+plot
+```
+Plot data.
+```{r}
+plot <- ggplot(data = surv_curves_summary_10e7, aes(x = day_alive, y = surv_percentage, color = wolbachia, shape = virus)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 1.5, stroke = 0.5, fill = "white") +
+    scale_color_manual(values=c("grey50", "black")) +
+    scale_shape_manual(values=c(21, 19))+
+    theme_HMI()+
+    labs(x = "Days post infection", y = NULL, title = "Survival (%) after 10^7 DCV") 
+
+
+
+plot
+```
+
+
+Plot data.
+```{r}
+plot <- ggplot(data = surv_curves_summary_10e8, aes(x = day_alive, y = surv_percentage, color = wolbachia, shape = virus)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 1.5, stroke = 0.5, fill = "white") +
+    scale_color_manual(values=c("grey50", "black")) +
+    scale_shape_manual(values=c(21, 19))+
+    theme_HMI()+
+    labs(x = "Days post infection", y = NULL, title = "Survival (%) after 10^8 DCV") 
+
+
+
+plot
+```
+
+
+
+Plot data.
+```{r}
+plot <- ggplot(data = surv_curves_summary_10e9, aes(x = day_alive, y = surv_percentage, color = wolbachia, shape = virus)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 1.5, stroke = 0.5, fill = "white") +
+    scale_color_manual(values=c("grey50", "black")) +
+    scale_shape_manual(values=c(21, 19))+
+    theme_HMI()+
+    labs(x = "Days post infection", y = NULL, title = "Survival (%) after 10^9 DCV") 
+
+
+
+plot
+```
+
+
+Prepare data for cox analysis and for survival plots for survminer.
+
+```{r}
+
+data_10e6_cox<-read.csv(here("Scripts","data_10e6.csv"), stringsAsFactors = FALSE, header = TRUE)
+data_10e7_cox<-read.csv(here("Scripts","data_10e7.csv"), stringsAsFactors = FALSE, header = TRUE)
+data_10e8_cox<-read.csv(here("Scripts","data_10e8.csv"), stringsAsFactors = FALSE, header = TRUE)
+data_10e9_cox<-read.csv(here("Scripts","data_10e9.csv"), stringsAsFactors = FALSE, header = TRUE)
+
+
+
+```
+
+
+
+```{r}
+# remove columns day_alive and number_alive so that file does not become nonsensical after transformation
+# make one entry per fly
+data_10e6_cox <- data_10e6_cox %>%
+  select(-c(day_alive, number_alive))  %>%
+  uncount(number_status)
+
+
+data_10e7_cox <- data_10e7_cox %>%
+  select(-c(day_alive, number_alive))  %>%
+  uncount(number_status)
+
+data_10e8_cox <- data_10e8_cox %>%
+  select(-c(day_alive, number_alive))  %>%
+  uncount(number_status)
+
+
+data_10e9_cox <- data_10e9_cox %>%
+  select(-c(day_alive, number_alive))  %>%
+  uncount(number_status)
+
+
+```
+
+```{r}
+#make virus and wolbachia factors
+data_10e6_cox$virus <- as.factor(data_10e6_cox$virus)
+data_10e6_cox$wolbachia <- as.factor(data_10e6_cox$wolbachia)
+data_10e7_cox$virus <- as.factor(data_10e7_cox$virus)
+data_10e7_cox$wolbachia <- as.factor(data_10e7_cox$wolbachia)
+data_10e8_cox$virus <- as.factor(data_10e8_cox$virus)
+data_10e8_cox$wolbachia <- as.factor(data_10e8_cox$wolbachia)
+data_10e9_cox$virus <- as.factor(data_10e9_cox$virus)
+data_10e9_cox$wolbachia <- as.factor(data_10e9_cox$wolbachia)
+
+```
+
+
+```{r}
+#make a unique_id for each vial, so that vial 1 of one condition is not associated with vial 1 of another condition
+data_10e6_cox <- unite(data_10e6_cox, "unique_id", "date", "virus", "wolbachia", "vial", sep = "_", remove = FALSE)
+data_10e7_cox <- unite(data_10e7_cox, "unique_id", "date", "virus", "wolbachia", "vial", sep = "_", remove = FALSE)
+data_10e8_cox <- unite(data_10e8_cox, "unique_id", "date", "virus", "wolbachia", "vial", sep = "_", remove = FALSE)
+data_10e9_cox <- unite(data_10e9_cox, "unique_id", "date", "virus", "wolbachia", "vial", sep = "_", remove = FALSE)
+
+```
+
+PLOTS with Survminer
+
+Plotting survival curves using survminer package.
+Load library.
+
+```{r}
+library(survminer)
+library(RColorBrewer)
+```
+```{r}
+fitx_10e6<- survfit(Surv(day_status, status) ~wolbachia+virus, data = data_10e6_cox, type="kaplan")
+
+fitx_10e7<- survfit(Surv(day_status, status) ~wolbachia+virus, data = data_10e7_cox, type="kaplan")
+
+fitx_10e8<- survfit(Surv(day_status, status) ~wolbachia+virus, data = data_10e8_cox, type="kaplan")
+
+fitx_10e9<- survfit(Surv(day_status, status) ~wolbachia+virus, data = data_10e9_cox, type="kaplan")
+
+```
+
+For color blind people palette. 
+
+```{r}
+library(RColorBrewer)
+display.brewer.all(colorblindFriendly = T)
+display.brewer.pal(n = 8, name = 'Paired')
+
+# Hexadecimal color specification 
+brewer.pal(n = 8, name = "Paired")
+```
+
+
+Now plot pretty plot for 10e6.
+
+
+```{r}
+p1<-ggsurvplot(
+  fitx_10e6,
+  fun = "pct",
+  data = data_10e6_cox,
+  size = 1.2,                 # change line size
+  palette =
+    c("#A6CEE3", "#1F78B4", "#FDBF6F", "#FF7F00"),# custom color palettes color blind
+  linetype = c(1,2,1,2),
+  
+  conf.int = FALSE,          # Add confidence interval
+  pval = TRUE,              # Add p-value
+ # pval.method = TRUE, 
+  legend = c("top"),
+  legend.title = c("Groups"),
+  surv.plot.height = 0.8,
+  #risk.table = TRUE,        # Add risk tablerisk.table.y.text
+  #risk.table.y.text = FALSE,
+  tables.y.text.col = TRUE,
+  tables.theme = theme_cleantable(),
+  ylab = "Survival (%)",
+  #risk.table.col = "background",# Risk table color by groups
+  legend.labs =
+    c("wolb-,dcv-", "wolb-,dcv+","wolb+,dcv-", "wolb+,dcv+"),    # Change legend labels
+  risk.table.height = 0.25, # Useful to change when you have multiple groups
+  ggtheme = theme_bw(base_size=12, base_family = "Arial"),font.family = "Arial")     #Change ggplot2 theme
+
+p1
+
+#ggsave(here("Scripts","10e6_firstprick_all.png"), plot = print(p1), width = 5.5, height = 3, dpi = 600)
+
+
+
+```
+Now plot pretty plot for 10e7.
+
+
+```{r}
+p2<-ggsurvplot(
+  fitx_10e7,
+  fun = "pct",
+  data = data_10e7_cox,
+  size = 1,                 # change line size
+  palette =
+    c("#A6CEE3", "#1F78B4", "#FDBF6F", "#FF7F00"),# custom color palettes color blind
+  linetype = c(1,2,1,2),
+  conf.int = FALSE,          # Add confidence interval
+  pval = TRUE,              # Add p-value
+ # pval.method = TRUE, 
+  legend = c("top"),
+  legend.title = c("Groups"),
+  surv.plot.height = 0.8,
+  #risk.table = TRUE,        # Add risk tablerisk.table.y.text
+  #risk.table.y.text = FALSE,
+  tables.y.text.col = TRUE,
+
+  tables.theme = theme_cleantable(),
+  ylab = "Survival (%)",
+  #risk.table.col = "background",# Risk table color by groups
+  legend.labs =
+    c("wolb-,dcv-", "wolb-,dcv+","wolb+,dcv-", "wolb+,dcv+"),    # Change legend labels
+  risk.table.height = 0.25, # Useful to change when you have multiple groups
+ ggtheme = theme_bw(base_size=12, base_family = "Arial"),font.family = "Arial")    #Change ggplot2 theme
+p2
+
+#ggsave(here("Scripts","10e7_firstprick_all.png"), plot = print(p2), width = 5.5, height = 3, dpi = 600)
+
+
+```
+
+
+Now plot pretty plot for 10e8.
+
+
+```{r}
+p3<-ggsurvplot(
+  fitx_10e8,
+  fun = "pct",
+  data = data_10e8_cox,
+  size = 1,                 # change line size
+  palette =
+    c("#A6CEE3", "#1F78B4", "#FDBF6F", "#FF7F00"),# custom color palettes color blind
+  linetype = c(1,2,1,2),
+  conf.int = FALSE,          # Add confidence interval
+  pval = TRUE,              # Add p-value
+ # pval.method = TRUE, 
+  legend = c("top"),
+  legend.title = c("Groups"),
+  surv.plot.height = 0.8,
+  #risk.table = TRUE,        # Add risk tablerisk.table.y.text
+  #risk.table.y.text = FALSE,
+  tables.y.text.col = TRUE,
+
+  tables.theme = theme_cleantable(),
+  ylab = "Survival (%)",
+  #risk.table.col = "background",# Risk table color by groups
+  legend.labs =
+    c("wolb-,dcv-", "wolb-,dcv+","wolb+,dcv-", "wolb+,dcv+"),    # Change legend labels
+  risk.table.height = 0.25, # Useful to change when you have multiple groups
+ ggtheme = theme_bw(base_size=12, base_family = "Arial"),font.family = "Arial")     #Changeggplot2 theme
+
+p3
+
+#ggsave(here("Scripts","10e8_firstprick_all.png"), plot = print(p3), width = 5.5, height = 3, dpi = 600)
+
+
+```
+
+Now plot pretty plot for 10e9.
+
+
+```{r}
+p4<-ggsurvplot(
+  fitx_10e9,
+  fun = "pct",
+  data = data_10e9_cox,
+  size = 1,                 # change line size
+  palette =
+    c("#A6CEE3", "#1F78B4", "#FDBF6F", "#FF7F00"),# custom color palettes color blind
+  linetype = c(1,2,1,2),
+  conf.int = FALSE,          # Add confidence interval
+  pval = TRUE,              # Add p-value
+ # pval.method = TRUE, 
+  legend = c("top"),
+  legend.title = c("Groups"),
+  surv.plot.height = 0.8,
+  #risk.table = TRUE,        # Add risk tablerisk.table.y.text
+  #risk.table.y.text = FALSE,
+  tables.y.text.col = TRUE,
+
+  tables.theme = theme_cleantable(),
+  ylab = "Survival (%)",
+  #risk.table.col = "background",# Risk table color by groups
+  legend.labs =
+    c("wolb-,dcv-", "wolb-,dcv+","wolb+,dcv-", "wolb+,dcv+"),    # Change legend labels
+  risk.table.height = 0.25, # Useful to change when you have multiple groups
+  ggtheme = theme_bw(base_size=12, base_family = "Arial"),font.family = "Arial")     #Changeggplot2 theme
+
+p4
+
+#ggsave(here("Scripts","10e9_firstprick_all.png"), plot = print(p4), width = 5.5, height = 3, dpi = 600)
+
+```
+
+
+Now perform Cox analysis with all data (with mocks included).
+
+
+*10^9* analysis
+
+```{r}
+#number of rows should match number of flies in original data
+nrow(data_10e9_cox)
+
+```
+```{r}
+### Cox mixed model
+model_10e9 = coxme::coxme(Surv(day_status, status) ~ wolbachia*virus + (1|unique_id), data = data_10e9_cox)
+summary(model_10e9)
+
+```
+Same analysis with different package to compare.
+
+```{r}
+model_10e9a <- coxph(Surv(day_status, status) ~ wolbachia*virus + frailty(unique_id), data = data_10e9_cox )
+
+summary(model_10e9a)
+
+
+```
+
+
+Plot cox hazard ratios. This package does not plot interaction, need to make my own code later.
+
+```{r}
+exp(coef(model_10e9a))
+ggforest(model_10e9a, data=data_10e9_cox)
+
+```
+
+
+*10e8* analysis
+
+
+```{r}
+#number of rows should match number of flies in original data
+nrow(data_10e8_cox)
+
+```
+```{r}
+### Cox mixed model
+model_10e8 = coxme::coxme(Surv(day_status, status) ~ wolbachia*virus + (1|unique_id), data = data_10e8_cox)
+summary(model_10e8)
+
+```
+Same analysis with different package to compare.
+
+```{r}
+model_10e8a <- coxph(Surv(day_status, status) ~ wolbachia*virus + frailty(unique_id), data = data_10e8_cox )
+
+summary(model_10e8a)
+
+
+```
+
+
+Plot cox hazard ratios
+
+```{r}
+exp(coef(model_10e8a))
+ggforest(model_10e8a, data=data_10e8_cox)
+
+```
+
+
+*10e7* analysis
+
+
+```{r}
+#number of rows should match number of flies in original data
+nrow(data_10e7_cox)
+
+```
+```{r}
+### Cox mixed model
+model_10e7 = coxme::coxme(Surv(day_status, status) ~ wolbachia*virus + (1|unique_id), data = data_10e7_cox)
+summary(model_10e7)
+
+```
+Same analysis with different package to compare.
+
+```{r}
+model_10e7a <- coxph(Surv(day_status, status) ~ wolbachia*virus + frailty(unique_id), data = data_10e7_cox )
+
+summary(model_10e7a)
+
+
+```
+
+
+Plot cox hazard ratios
+
+```{r}
+exp(coef(model_10e7a))
+ggforest(model_10e7a, data=data_10e7_cox)
+
+```
+
+
+
+*10e6* analysis
+
+
+```{r}
+#number of rows should match number of flies in original data
+nrow(data_10e6_cox)
+
+```
+```{r}
+### Cox mixed model
+model_10e6 = coxme::coxme(Surv(day_status, status) ~ wolbachia*virus + (1|unique_id), data = data_10e6_cox)
+summary(model_10e6)
+
+```
+Same analysis with different package to compare.
+
+```{r}
+model_10e6a <- coxph(Surv(day_status, status) ~ wolbachia*virus + frailty(unique_id), data = data_10e6_cox )
+
+summary(model_10e6a)
+
+
+```
+
+
+Plot cox hazard ratios
+
+```{r}
+exp(coef(model_10e6a))
+p1a<-ggforest(model_10e6a, data=data_10e6_cox)
+#print(forest_model(lung_cox, limits=log( c(.5, 50) ) ))
+
+p1a
+
+
+#ggsave(here("Scripts","10e6_firstprick_all_H.png"), plot = print(p1a), width = 5.5, height = 3, dpi = 600)
+
+```
+
+Now I will perform Cox analysis without mock groups to see if wolbachia absent and present now 
+
+Remove all mocks from the design.
+
+```{r}
+data_10e6_cox_no_mock=subset(data_10e6_cox, dilution %in% c("10^6"))
+data_10e7_cox_no_mock=subset(data_10e7_cox, dilution %in% c("10^7"))
+data_10e8_cox_no_mock=subset(data_10e8_cox, dilution %in% c("10^8"))
+data_10e9_cox_no_mock=subset(data_10e9_cox, dilution %in% c("10^9"))
+
+write.csv(data_10e9_cox_no_mock, "data_10e9_no_mock.csv") #test
+write.csv(data_10e8_cox_no_mock, "data_10e8_no_mock.csv") #test
+write.csv(data_10e7_cox_no_mock, "data_10e7_no_mock.csv") #test
+write.csv(data_10e6_cox_no_mock, "data_10e6_no_mock.csv") #test
+
+
+```
+
+
+```{r}
+### Cox for wolbachia only 10e9
+model_10e9_test = coxme::coxme(Surv(day_status, status) ~wolbachia  + (1|unique_id), data = data_10e9_cox_no_mock)
+summary(model_10e9_test)
+```
+
+
+
+
+```{r}
+### Cox for wolbachia only 10e8
+model_10e8_test = coxme::coxme(Surv(day_status, status) ~wolbachia  + (1|unique_id), data = data_10e8_cox_no_mock)
+summary(model_10e8_test)
+```
+
+
+```{r}
+### Cox for wolbachia only 10e7
+model_10e7_test = coxme::coxme(Surv(day_status, status) ~wolbachia  + (1|unique_id), data = data_10e7_cox_no_mock)
+summary(model_10e7_test)
+```
+
+
+
+
+```{r}
+### Cox for wolbachia only 10e6
+model_10e6_test = coxme::coxme(Surv(day_status, status) ~wolbachia  + (1|unique_id), data = data_10e6_cox_no_mock)
+summary(model_10e6_test)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
